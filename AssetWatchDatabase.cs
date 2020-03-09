@@ -207,13 +207,40 @@ namespace AssetWatch
 
             // Collect all assets
             WorkManager.EnqueueWork(WorkType.Async, () => FindAssetsJob(assetsPath));
+            
+            // Collect scene dependencies
+            var sceneDependencies = new Dictionary<string, string[]>();
+
+            WorkManager.EnqueueWork(WorkType.UnityLoop, () =>
+            {
+                var total = SceneInfos.Values.Count;
+                var progress = 0f;
+
+                foreach (var sceneInfo in SceneInfos.Values)
+                {
+                    EditorUtility.DisplayProgressBar("AssetWatch: Collecting scene dependencies", sceneInfo.Path, progress);
+                    progress += 1f / total;
+
+                    var dependencyResult = AssetDatabase.GetDependencies(sceneInfo.Path, true);
+                    sceneDependencies.Add(sceneInfo.Path, dependencyResult);
+                }
+
+                EditorUtility.ClearProgressBar();
+            });
 
             // Update all scene dependencies
             WorkManager.EnqueueWork(WorkType.Async, () =>
             {
                 foreach (var sceneInfo in SceneInfos.Values)
                 {
-                    UpdateScene(sceneInfo.Path);
+                    if (sceneDependencies.TryGetValue(sceneInfo.Path, out var dependencies))
+                    {
+                        UpdateSceneDependencies(sceneInfo.Path, dependencies);
+                    }
+                    else
+                    {
+                        Debug.LogWarning("AssetWatch: Internal data representation out of sync, please use \"Assets/Usage/Refresh All\" to ensure correct behavior.");
+                    }
                 }
             });
 
@@ -281,39 +308,40 @@ namespace AssetWatch
             var dependencyResult =
                 WorkManager.EnqueueWork(WorkType.UnityLoop, () => AssetDatabase.GetDependencies(path, true));
 
-            WorkManager.EnqueueWork(WorkType.Async, () =>
+            WorkManager.EnqueueWork(WorkType.Async, () => UpdateSceneDependencies(path, dependencyResult.GetResult()));
+        }
+
+        private static void UpdateSceneDependencies(string path, string[] dependencies)
+        {
+            SceneInfo info;
+
+            lock(LockObject)
             {
-                SceneInfo info;
-
-                lock(LockObject)
+                if (!SceneInfos.TryGetValue(path, out info))
                 {
-                    if (!SceneInfos.TryGetValue(path, out info))
+                    Debug.LogError("AssetWatch: Scene is not tracked.");
+                    return;
+                }
+            }
+                
+            var usedAssets = new AssetInfo[dependencies.Length];
+
+            lock (LockObject)
+            {
+                for (var i = 0; i < dependencies.Length; i++)
+                {
+                    if (AssetInfos.TryGetValue(dependencies[i], out var assetInfo))
                     {
-                        Debug.LogError("AssetWatch: Scene is not tracked.");
-                        return;
+                        usedAssets[i] = assetInfo;
+                    }
+                    else
+                    {
+                        usedAssets[i] = null;
                     }
                 }
+            }
 
-                var usedPaths = dependencyResult.GetResult();
-                var usedAssets = new AssetInfo[usedPaths.Length];
-
-                lock (LockObject)
-                {
-                    for (var i = 0; i < usedPaths.Length; i++)
-                    {
-                        if (AssetInfos.TryGetValue(usedPaths[i], out var assetInfo))
-                        {
-                            usedAssets[i] = assetInfo;
-                        }
-                        else
-                        {
-                            usedAssets[i] = null;
-                        }
-                    }
-                }
-
-                info.SetUsedAssets(usedAssets);
-            });
+            info.SetUsedAssets(usedAssets);
         }
 
         private static void PostUpdate()
