@@ -1,11 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEditor.VersionControl;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using Debug = UnityEngine.Debug;
 
 namespace AssetWatch
 {
@@ -113,35 +115,26 @@ namespace AssetWatch
                     return;
                 }
 
-                if (AssetInfos.ContainsKey(newPath))
-                {
-                    // Shouldn't happen, but just in case...
-                    Debug.LogWarning("AssetWatch: The asset movement caused an internal data corruption, refreshing all data...");
-                    UpdateAllData();
-                    return;
-                }
-
-                // Modify the asset reference to reflect the path change
-                assetInfo.Path = newPath;
                 AssetInfos.Remove(oldPath);
-                AssetInfos.Add(newPath, assetInfo);
+
+                if (!AssetInfos.ContainsKey(newPath))
+                {
+                    assetInfo.Path = newPath;
+                    AssetInfos.Add(newPath, assetInfo);
+                }
 
                 // If the moved asset is a scene, update the scene reference as well
                 if (oldPath.EndsWith(".unity", StringComparison.InvariantCultureIgnoreCase))
                 {
                     if (SceneInfos.TryGetValue(oldPath, out var sceneInfo))
                     {
-                        if (SceneInfos.ContainsKey(newPath))
-                        {
-                            // Shouldn't happen, but just in case...
-                            Debug.LogWarning("AssetWatch: The asset movement caused an internal data corruption, refreshing all data...");
-                            UpdateAllData();
-                            return;
-                        }
-
-                        sceneInfo.Path = newPath;
                         SceneInfos.Remove(oldPath);
-                        SceneInfos.Add(newPath, sceneInfo);
+
+                        if (!SceneInfos.ContainsKey(newPath))
+                        {
+                            sceneInfo.Path = newPath;
+                            SceneInfos.Add(newPath, sceneInfo);
+                        }
                     }
                 }
             }
@@ -255,7 +248,10 @@ namespace AssetWatch
 
                 lock (LockObject)
                 {
-                    AssetInfos.Add(assetName, assetInfo);
+                    if (!AssetInfos.ContainsKey(assetName))
+                    {
+                        AssetInfos.Add(assetName, assetInfo);
+                    }
                 }
 
                 if (assetName.EndsWith(".unity", StringComparison.InvariantCultureIgnoreCase))
@@ -265,7 +261,10 @@ namespace AssetWatch
 
                     lock (LockObject)
                     {
-                        SceneInfos.Add(assetName, sceneInfo);
+                        if (!SceneInfos.ContainsKey(assetName))
+                        {
+                            SceneInfos.Add(assetName, sceneInfo);
+                        }
                     }
                 }
 
@@ -279,14 +278,27 @@ namespace AssetWatch
         {
             // Get dependencies from unity
             var dependencyResult =
-                WorkManager.EnqueueWork(WorkType.UnityLoop, () => AssetDatabase.GetDependencies(path, true));
+                WorkManager.EnqueueWork(WorkType.UnityLoop, () =>
+                {
+                    Debug.Log($"AssetWatch: ");
+
+                    var stopwatch = new Stopwatch();
+                    stopwatch.Start();
+
+                    var dependencies = AssetDatabase.GetDependencies(path, true);
+
+                    stopwatch.Stop();
+                    Debug.Log($"AssetWatch: Started scanning scene: {path}, Find dependencies took {stopwatch.Elapsed.TotalMilliseconds} ms, Dependencies found: {dependencies.Length}");
+
+                    return dependencies;
+                });
 
             WorkManager.EnqueueWork(WorkType.Async, () =>
             {
                 SceneInfo info;
 
                 lock(LockObject)
-                {
+                { 
                     if (!SceneInfos.TryGetValue(path, out info))
                     {
                         Debug.LogError("AssetWatch: Scene is not tracked.");
@@ -307,7 +319,7 @@ namespace AssetWatch
                         }
                         else
                         {
-                            usedAssets[i] = null;
+                            usedAssets[i] = null; 
                         }
                     }
                 }
@@ -315,7 +327,7 @@ namespace AssetWatch
                 info.SetUsedAssets(usedAssets);
             });
         }
-
+         
         private static void PostUpdate()
         {
             foreach(var assetInfo in AssetInfos.Values)
